@@ -1,0 +1,811 @@
+---
+title: "Final RMD file"
+author: "Blue Space"
+output: github_document
+---
+
+You work for Travelers Insurance Company's fraud detection department as a modeler. Create a predictive model with concerns about the fraud detection accuracy AND the key drivers that cause fraudulence.
+
+Goals: 
+(1) identify first-party physical damage fraudulence 
+(2) explain the indicators of fraudulent claims.
+
+```{r preprocessing}
+library(tidyverse)
+library(vcd)
+library(ggmosaic)
+library(lubridate)
+library(zipcodeR)
+library(twosamples)
+
+train <- read_csv("data copy/train_2023.csv") %>% select(-claim_number)
+  # data type of past_num_of_claims
+
+train <- train %>% transform(
+  age_of_driver=as.integer(age_of_driver),
+  gender=as.factor(gender),
+  marital_status=as.factor(marital_status),
+  safty_rating=as.integer(safty_rating),
+  annual_income=as.integer(annual_income),
+  high_education_ind=as.factor(high_education_ind),
+  address_change_ind=as.factor(address_change_ind),
+  living_status=as.factor(living_status),
+  zip_code=as.factor(zip_code),
+  claim_date=as.factor(claim_date),
+  claim_day_of_week=as.factor(claim_day_of_week),
+  accident_site=as.factor(accident_site),
+  past_num_of_claims=as.factor(past_num_of_claims),
+  witness_present_ind=as.factor(witness_present_ind),
+  liab_prct=as.integer(liab_prct),
+  channel=as.factor(channel),
+  policy_report_filed_ind=as.factor(policy_report_filed_ind),
+  claim_est_payout=as.double(claim_est_payout),
+  age_of_vehicle=as.integer(age_of_vehicle),
+  vehicle_category=as.factor(vehicle_category), 
+  vehicle_price=as.double(vehicle_price),
+  vehicle_color=as.factor(vehicle_color),
+  vehicle_weight=as.double(vehicle_weight),
+  fraud=as.integer(fraud)
+)
+
+train %>% head(10)
+
+
+Name <- c("age_of_driver","safty_rating","annual_income","past_num_of_claims","liab_prct","claim_est_payout","age_of_vehicle","vehicle_price","vehicle_weight","claim_number","gender","marital_status","high_education_ind","address_change_ind","living_status","zip_code","claim_date","claim_day_of_week","accident_site","witness_present_ind","channel","policy_report_filed_ind","vehicle_category","vehicle_color","fraud")
+
+Type <- c(rep("Numerical Predictor",9), rep("Categorical Predictor",15),"Response Variable")
+
+Description <- c("Age of driver","Safety rating index of driver","Annual income of driver", "Number of claims the driver reported in past 5 years","Liability percentage of the claim"," Estimated claim payout","Age of first party vehicle","Price of first party vehicle","Weight of first party vehicle","Claim ID (cannot be used in model)","Gender of driver","Marital status of driver","Driver’s high education index","Whether or not the driver changed living address in past 1 year","Driver’s living status, own or rent","Driver’s living address zipcode","Date of first notice of claim","Day of week of first notice of claim","Accident location, highway, parking lot or local","Witness indicator of the claim","The channel of purchasing policy","Policy report filed indicator","Category of first party vehicle","Color of first party vehicle","Fraud indicator (0=no, 1=yes)")
+
+
+
+variable_key <- data.frame(Name,Type,Description)
+variable_key
+
+
+## fill missing values
+train <- train[complete.cases(train), ]
+# here I remove all missing; an alternative: imputation?
+# the following 4 cols contain missing values:
+# "marital_status"      "witness_present_ind" "claim_est_payout"    "age_of_vehicle"
+
+## outliers
+# age_of_driver, annual_income
+
+```
+
+```{r univariate analysis}
+if (!is.factor(train$fraud)) {
+  train$fraud <- as.factor(train$fraud)
+  train$fraud <- factor(train$fraud, levels = c(0, 1))
+}
+
+# 1. fraud against age - Done
+age_uni <- train %>%
+  mutate(age_group = cut(age_of_driver, breaks = seq(0, 100, 10), 
+                         include.lowest = TRUE)) %>%
+  ggplot(aes(age_group, fill = fraud)) +
+  geom_histogram(position = "fill", stat="count") +
+  scale_x_discrete(labels = c("0-10", "11-20", "21-30", "31-40", "41-50", "51-60", "61-70", "71-80", "81-90", "91-100")) +
+  scale_fill_discrete(name="Fraud") +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+
+#H0: p1=...=p10=0 vs H1: pi != pj for at least one pair (i!=j).
+## Chi_sq test for multiple proportions
+age_uni
+age_chi <- train %>%
+  mutate(age_group = cut(age_of_driver, breaks = seq(0, 100, 10), include.lowest = TRUE)) %>% 
+  filter(!is.na(age_group)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(age_group) %>%
+  summarize(age_total = n(),
+            age_fraud = sum(fraud_numeric == 1))
+age_prop_chi <-chisq.test(age_chi$age_fraud,age_chi$age_total)
+age_prop_chi
+
+
+# 2. fraud against gender - Done
+gender_uni <- train %>% ggplot(aes(gender, fill = factor(fraud))) +
+  geom_bar(position = "fill") +
+  scale_fill_discrete(name = "Fraud") +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+gender_uni
+gender_z <- train %>%
+  filter(!is.na(gender)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(gender) %>%
+  summarize(gender_total = n(),
+            gender_fraud = sum(fraud_numeric == 1))
+gender_prop_z <-prop.test(gender_z$gender_fraud,gender_z$gender_total,alternative="greater")
+gender_prop_z
+
+
+# 3. fraud against marital_status - Done
+ms_uni <- train %>% 
+  filter(!is.na(marital_status)) %>%
+  ggplot(aes(x = factor(marital_status), fill = factor(fraud))) + 
+  geom_bar(position = "fill")+
+  scale_fill_discrete(name="Fraud")+
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+ms_uni
+ms_z <- train %>% 
+  filter(!is.na(marital_status)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0),marital_status_text = ifelse(marital_status == 1, "Yes", "No"))%>%
+  group_by(marital_status_text) %>%
+  summarize(ms_total = n(),
+            ms_fraud = sum(fraud_numeric == 1))
+ms_prop_z <-prop.test(ms_z$ms_fraud,ms_z$ms_total,alternative="greater")
+ms_prop_z
+
+# 4. fraud against safety rating - Done
+sr_uni <- train %>% ggplot(aes(safty_rating, factor(fraud))) + 
+  geom_boxplot(na.rm=T, fill= c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen")) +
+  coord_flip()
+
+sr_uni
+sr_fraud <- train %>% 
+  select(fraud, safty_rating) %>%
+  filter(!is.na(safty_rating), fraud == "Fraud")
+sr_no_fraud <- train %>% 
+  select(fraud, safty_rating) %>%
+  filter(!is.na(safty_rating), fraud == "No Fraud")
+library(twosamples)
+cvm_test(sr_fraud$safty_rating, sr_no_fraud$safty_rating)
+ad_test(sr_fraud$safty_rating, sr_no_fraud$safty_rating)
+
+# 5. fraud against annual income - Done
+income_uni <- train %>%
+  filter(!is.na(annual_income), annual_income>0, annual_income >= 20000) %>% 
+  ggplot(aes(factor(fraud), annual_income)) + 
+  geom_violin() +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+income_uni
+
+income_uni <- train %>%
+  filter(!is.na(annual_income), annual_income >= 20000) %>% 
+  ggplot(aes(factor(fraud),annual_income)) + 
+  geom_violin()
+income_fraud <- train %>% 
+  select(fraud, annual_income) %>%
+  filter(!is.na(annual_income), fraud == "Fraud")
+income_no_fraud <- train %>% 
+  select(fraud, annual_income) %>%
+  filter(!is.na(annual_income), fraud == "No Fraud")
+cvm_test(income_fraud$annual_income, income_no_fraud$annual_income)
+ad_test(income_fraud$annual_income, income_no_fraud$annual_income)
+
+# 6. fraud against high_education_ind - Done
+edu_uni <- train %>% 
+  filter(!is.na(high_education_ind)) %>%
+  ggplot(aes(x = factor(high_education_ind), fill = factor(fraud))) + 
+  geom_bar(position = "fill")+
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+edu_uni
+edu_z <- train %>% 
+  filter(!is.na(high_education_ind)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0), edu_text = ifelse(high_education_ind == 1, "Yes", "No"))%>%
+  group_by(edu_text) %>%
+  summarize(edu_total = n(),
+            edu_fraud = sum(fraud_numeric == 1))
+edu_prop_z <-prop.test(edu_z$edu_fraud,edu_z$edu_total,alternative="greater")
+edu_prop_z
+
+# 7. fraud against address_change_ind - Done
+address_uni <- train %>% 
+  filter(!is.na(address_change_ind)) %>%
+  ggplot(aes(x = factor(address_change_ind), fill = factor(fraud))) + 
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+address_uni
+address_z <- train %>% 
+  filter(!is.na(address_change_ind)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0), address_text = ifelse(address_change_ind == 1, "Yes", "No")) %>%
+  group_by(address_text) %>%
+  summarize(address_total = n(), address_fraud = sum(fraud_numeric == 1))
+address_prop_z <-prop.test(address_z$address_fraud,address_z$address_total,alternative="less")
+address_prop_z
+
+# 8. fraud against living_status - Done
+mosaicplot(~ living_status + fraud, 
+           data = train, 
+           color = c("lightgreen", "lightskyblue"), 
+           main = "Relationship between Living Status and Fraud")
+
+  # bar graph attempt
+live_uni <- train %>% ggplot(aes(living_status, fill = factor(fraud))) +
+  geom_bar(position = "dodge")+
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+live_uni
+live_z <- train %>% 
+  filter(!is.na(living_status)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(living_status) %>%
+  summarize(live_total = n(), live_fraud = sum(fraud_numeric == 1))
+live_prop_z <-prop.test(live_z$live_fraud,live_z$live_total,alternative="two.sided")
+live_prop_z
+
+
+## 11. fraud against claim_day_of_week - Done
+week_uni <- train %>% ggplot(aes(claim_day_of_week, fill=factor(fraud))) +
+  geom_bar(position="fill")
+
+week_chi <- train %>%
+  filter(!is.na(claim_day_of_week)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(claim_day_of_week) %>%
+  summarize(week_total = n(),
+            week_fraud = sum(fraud_numeric == 1))
+week_prop_chi <-prop.test(week_chi$week_fraud,week_chi$week_total,alternative="two.sided")
+week_prop_chi
+
+## 12. fraud against accident_site - Done
+site_uni <- train %>% ggplot(aes(accident_site, fill=factor(fraud))) +
+  geom_bar(position="fill")
+
+site_uni
+site_chi <- train %>%
+  filter(!is.na(accident_site)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(accident_site) %>%
+  summarize(site_total = n(),
+            site_fraud = sum(fraud_numeric == 1))
+site_prop_chi <-prop.test(site_chi$site_fraud,site_chi$site_total, alternative="two.sided")
+site_prop_chi
+
+## 13. fraud against past_num_of_claims - Done
+train %>% ggplot(aes(past_num_of_claims, factor(fraud))) +
+  geom_count() +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+  # barplot attempt
+past_uni <- train %>% 
+  ggplot(aes(past_num_of_claims, fill = fraud)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+past_uni
+
+past_fraud <- train %>% 
+  select(fraud, past_num_of_claims) %>%
+  filter(!is.na(past_num_of_claims), fraud == "Fraud")
+past_no_fraud <- train %>% 
+  select(fraud, past_num_of_claims) %>%
+  filter(!is.na(past_num_of_claims), fraud == "No Fraud")
+cvm_test(past_fraud$past_num_of_claims, past_no_fraud$past_num_of_claims)
+ad_test(past_fraud$past_num_of_claims, past_no_fraud$past_num_of_claims)
+
+
+## 14. fraud against witness_present_ind - Done
+witness_uni <- train %>% 
+  filter(!is.na(witness_present_ind)) %>%
+  ggplot(aes(x = factor(witness_present_ind), fill = factor(fraud))) + 
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+witness_uni
+witness_z <- train %>%
+  filter(!is.na(witness_present_ind)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0), witness_text = ifelse(witness_present_ind == 1, "Yes", "No")) %>%
+  group_by(witness_present_ind) %>%
+  summarize(witness_total = n(),
+            witness_fraud = sum(fraud_numeric == 1))
+witness_prop_z <-prop.test(witness_z$witness_fraud,witness_z$witness_total,alternative="greater")
+witness_prop_z
+
+## 15. fraud against liab_prct - Not Done
+train %>% ggplot(aes(liab_prct, fill = factor(fraud))) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+names(train)
+liab_fraud <- train %>% 
+  select(fraud, liab_prct) %>%
+  filter(!is.na(liab_prct), fraud == "Fraud")
+liab_no_fraud <- train %>% 
+  select(fraud, liab_prct) %>%
+  filter(!is.na(liab_prct), fraud == "No Fraud")
+cvm_test(liab_fraud$liab_prct, liab_no_fraud$liab_prct)
+ad_test(liab_fraud$liab_prct, liab_no_fraud$liab_prct)
+
+## 16. fraud against channel - Done
+channel_uni <- train %>% 
+  filter(!is.na(channel)) %>%
+  ggplot(aes(x = factor(channel), fill = factor(fraud))) + 
+  geom_bar(position = "fill")
+
+channel_uni
+channel_chi <- train %>%
+  filter(!is.na(channel)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(channel) %>%
+  summarize(channel_total = n(),
+            channel_fraud = sum(fraud_numeric == 1)) %>%
+  select(channel_total, channel_fraud)
+as.matrix(channel_chi)
+channel_matrix <- as.matrix(channel_chi)
+dim(channel_matrix)
+channel_prop_chi <- chisq.test(channel_matrix)
+channel_prop_chi
+
+
+## 17. fraud against policy_report_filed_ind
+policy_uni <- train %>% 
+  filter(!is.na(policy_report_filed_ind)) %>%
+  ggplot(aes(x = factor(policy_report_filed_ind), fill = factor(fraud))) + 
+  geom_bar(position = "fill")+
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+policy_uni
+policy_z <- train %>%
+  filter(!is.na(policy_report_filed_ind)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0), policy_text = ifelse(policy_report_filed_ind == 1, "Yes", "No")) %>%
+  group_by(policy_text) %>%
+  summarize(policy_total = n(),
+            policy_fraud = sum(fraud_numeric == 1))
+policy_prop_z <-prop.test(policy_z$policy_fraud,policy_z$policy_total,alternative="less")
+policy_prop_z
+
+
+## 18. fraud against claim_est_payout
+payout_uni <- train %>% 
+  ggplot(aes(fraud, claim_est_payout, fill = fraud)) + 
+  geom_boxplot() +
+  scale_fill_discrete(name="Fraud")+
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+payout_uni
+payout_fraud <- train %>% 
+  select(fraud, claim_est_payout) %>%
+  filter(!is.na(claim_est_payout), fraud == "Fraud")
+payout_no_fraud <- train %>% 
+  select(fraud, claim_est_payout) %>%
+  filter(!is.na(claim_est_payout), fraud == "No Fraud")
+cvm_test(payout_fraud$claim_est_payout, payout_no_fraud$claim_est_payout)
+ad_test(payout_fraud$claim_est_payout, payout_no_fraud$claim_est_payout)
+
+
+## 19. fraud against age_of_vehicle
+train %>%
+  ggplot(aes(factor(age_of_vehicle), fill = factor(fraud))) +
+  geom_bar(position = "dodge") +
+  scale_fill_discrete(name="Fraud")+
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+  # box plot attempt
+veh_age_uni <- train %>% 
+  ggplot(aes(factor(fraud), age_of_vehicle, fill = fraud)) +
+  geom_boxplot(position = "dodge", fill=c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen"))
+
+veh_age_uni
+veh_age_fraud <- train %>% 
+  select(fraud, age_of_vehicle) %>%
+  filter(!is.na(age_of_vehicle), fraud == "Fraud")
+veh_age_no_fraud <- train %>% 
+  select(fraud, age_of_vehicle) %>%
+  filter(!is.na(age_of_vehicle), fraud == "No Fraud")
+cvm_test(veh_age_fraud$age_of_vehicle, veh_age_no_fraud$age_of_vehicle)
+ad_test(veh_age_fraud$age_of_vehicle, veh_age_no_fraud$age_of_vehicle)
+
+
+## 20. fraud against vehicle_category
+category_uni <- train %>% 
+  filter(!is.na(vehicle_category)) %>%
+  ggplot(aes(x = factor(vehicle_category), fill = factor(fraud))) + 
+  geom_bar(position = "fill")
+
+category_uni
+category_chi <- train %>%
+  filter(!is.na(vehicle_category)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(vehicle_category) %>%
+  summarize(category_total = n(),
+            category_fraud = sum(fraud_numeric == 1)) %>%
+  select(category_total, category_fraud)
+as.matrix(category_chi)
+category_matrix <- as.matrix(category_chi)
+dim(category_matrix)
+category_prop_chi <- chisq.test(category_matrix)
+category_prop_chi
+
+## 21. fraud against LOG TRANSFORMED vehicle_price
+price_uni <- train %>% 
+  ggplot(aes(log(vehicle_price), fill = factor(fraud))) +
+  geom_density(alpha = 0.5)
+
+price_uni
+price_fraud <- train %>% 
+  select(fraud, vehicle_price) %>%
+  filter(!is.na(vehicle_price), fraud == "Fraud")
+price_no_fraud <- train %>% 
+  select(fraud, vehicle_price) %>%
+  filter(!is.na(vehicle_price), fraud == "No Fraud")
+cvm_test(price_fraud$vehicle_price, price_no_fraud$vehicle_price)
+ad_test(price_fraud$vehicle_price, price_no_fraud$vehicle_price)
+
+## 22. fraud against vehicle_color
+color_uni <- train %>% 
+  filter(!is.na(vehicle_color)) %>%
+  ggplot(aes(x = factor(vehicle_color), fill = factor(fraud))) + 
+  geom_bar(position = "fill")
+
+color_uni
+color_chi <- train %>%
+  filter(!is.na(vehicle_color)) %>%
+  mutate(fraud_numeric = ifelse(fraud == "Fraud", 1, 0)) %>%
+  group_by(vehicle_color) %>%
+  summarize(color_total = n(),
+            color_fraud = sum(fraud_numeric == 1)) %>%
+  select(color_total, color_fraud)
+as.matrix(color_chi)
+color_matrix <- as.matrix(color_chi)
+dim(color_matrix)
+color_prop_chi <- chisq.test(color_matrix)
+color_prop_chi
+
+## 23. fraud against vehicle_weight
+weight_uni <- train %>% 
+  ggplot(aes(factor(fraud), vehicle_weight, fill = factor(fraud))) + 
+  geom_boxplot(alpha = 0.5) +
+  scale_fill_discrete(name="Fraud")
+
+weight_uni
+weight_fraud <- train %>% 
+  select(fraud, vehicle_weight) %>%
+  filter(!is.na(vehicle_weight), fraud == "Fraud")
+weight_no_fraud <- train %>% 
+  select(fraud, vehicle_weight) %>%
+  filter(!is.na(vehicle_weight), fraud == "No Fraud")
+cvm_test(weight_fraud$vehicle_weight, weight_no_fraud$vehicle_weight)
+ad_test(weight_fraud$vehicle_weight, weight_no_fraud$vehicle_weight)
+```
+As result, statistically significant predictor variables: 
+age, gender, marital_status, annual_income, high_education_ind, address_change_ind, living_status, witness_present_ind, liab_prct,policy_report_filed_ind,claim_est_payout,age_of_vehicle, past_num_of_claims
+
+```{r bivariate: correlation matrix & logistic model}
+
+
+```
+
+```{r bivariate: visualization}
+train
+#correlated variables: (y,x)
+#log_annual_income, marital_status; 
+#age_of_driver vs log_annual_income;
+#log_annual_income, gender;
+#living_status, log_annual_income;
+#log_annual_income vs past_num_of_claims;
+#age_of_driver vs past_num_claims;
+#policy_report_filed_ind, past_num_of_claims; 
+#witness_present_ind, policy_report_filed_ind;        
+#living_status, policy_report_filed_ind;
+#high_education_ind vs living_status;
+
+# 1. 
+
+
+# 2. marital_status / gender with fraud
+sapply(train, class)
+
+mosaicplot(~ gender + marital_status + fraud, 
+           data = train, 
+           color = 3:5,
+           las = 1, 
+           shade = TRUE, 
+           margin = list(1:2, 3),
+           main = "fraud by gender and marital status")
+
+# 3. address_change_id & living_status with fraud
+  # make sure `fraud` is a factor
+train %>% 
+  filter(annual_income > 2000) %>% 
+  ggplot() +
+  geom_boxplot(aes(past_num_of_claims, log(annual_income), fill = fraud), outlier.alpha = 0.5) +
+  geom_point(aes(past_num_of_claims, log(annual_income), color = fraud), alpha = 0.5) +
+  facet_grid(~ fraud) +
+  labs(title = "Fraud by Annual Income and Past Number of Claims",
+       x = "Past Number of Claims",
+       y = "Annual Income") +
+  theme_minimal() +
+  scale_fill_manual(values = c("No Fraud" = "lightskyblue", "Fraud" = "lightgreen")) +
+  scale_color_manual(values = c("No Fraud" = "black", "Fraud" = "seagreen"))
+
+
+
+# 4. marital_status, address_change_ind, living_status vs fraud
+train$fraud <- ifelse(train$fraud == "Fraud", 1, 0)
+
+fraud_summary <- train %>%
+  group_by(marital_status, address_change_ind, living_status, fraud) %>%
+  summarize(count = n()) %>%
+  ungroup()
+
+sapply(train, class)
+
+fraud_proportion <- fraud_summary %>%
+  mutate(proportion = count / sum(count)) %>%
+  spread(key = fraud, value = proportion) %>% 
+  mutate(Fraud = ifelse(is.na(`1`), `0`, `1`)) %>%
+  select(-`0`, -`1`)
+
+fraud_proportion %>% 
+  ggplot(aes(marital_status, address_change_ind, fill = Fraud)) + 
+  geom_tile() +
+  facet_wrap(~ living_status) +
+  scale_fill_gradient2(low = "white", mid = "lightskyblue", high = "red", midpoint = 0.5, limits = c(0, 1)) +
+  labs(title = "Fraud by Marital Status, Address Change Index, Living status",
+       x = "Marital Status", y = "Address Change Ind", fill = "Proportion of Fraud") +
+  theme_minimal() +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold"),
+        strip.text.y = element_text(size = 12, face = "bold"))
+
+```
+
+```{r rf1}
+## Random Forest
+library(randomForest)
+library(caret)
+library(caTools)
+library(ROSE)
+library(e1071)
+
+summary(train)   # reassure all types are valid
+
+set.seed(415)
+train <- train %>% select(-claim_date, -zip_code)
+
+# split train and validation sets
+spl <- sample.split(train$fraud, SplitRatio = 0.75)
+train_set <- train %>% subset(spl == T)
+train_set_balanced <- ovun.sample(fraud ~ ., 
+                                  data = train_set, method = "both", 
+                                  N = nrow(train_set),
+                                  p = 0.5,
+                                  seed = 415)$data
+validation_set <- train %>% subset(spl == F)
+
+dim(train_set_balanced)
+dim(validation_set)
+
+train_set_balanced$fraud <- as.factor(train_set_balanced$fraud)
+validation_set$fraud <- as.factor(validation_set$fraud)
+
+## rf_raw
+rf_raw <- randomForest(fraud ~ ., data = train_set_balanced)
+rf_raw_pred <- rf_raw %>% predict(newdata = validation_set)
+table(validation_set$fraud, rf_raw_pred)
+confusionMatrix(rf_raw_pred, validation_set$fraud)
+
+varImpPlot(rf_raw)
+
+accuracy_raw <- sum(rf_raw_pred == validation_set$fraud) / length(rf_raw_pred)
+cat("Accuracy of rf_raw:", accuracy_raw)
+
+
+## cross validation
+control <- trainControl(method = "cv", number = 3) # 3 fold
+tune_grid <- expand.grid(.mtry = seq(1, ncol(train_set_balanced) - 1, by = 2))
+tuned_rf_raw <- train(fraud ~ ., data = train_set_balanced, 
+                      method = "rf", trControl = control, 
+                      tuneGrid = tune_grid)
+rf_raw_tuned_pred <- tuned_rf_raw %>% predict(newdata = validation_set)
+cm <- confusionMatrix(as.factor(rf_raw_tuned_pred), as.factor(validation_set$fraud))
+precision <- cm$table[2,2] / sum(cm$table[,2])
+recall <- cm$table[2,2] / sum(cm$table[2,])
+f1 <- 2 * ((precision * recall) / (precision + recall))
+
+test <- read_csv("data copy/test_2023.csv")
+
+test <- test %>% transform(
+  age_of_driver=as.integer(age_of_driver),
+  gender=as.factor(gender),
+  marital_status=as.factor(marital_status),
+  safty_rating=as.integer(safty_rating),
+  annual_income=as.integer(annual_income),
+  high_education_ind=as.factor(high_education_ind),
+  address_change_ind=as.factor(address_change_ind),
+  living_status=as.factor(living_status),
+  zip_code=as.factor(zip_code),
+  claim_date=as.factor(claim_date),
+  claim_day_of_week=as.factor(claim_day_of_week),
+  accident_site=as.factor(accident_site),
+  past_num_of_claims=as.factor(past_num_of_claims),
+  witness_present_ind=as.factor(witness_present_ind),
+  liab_prct=as.integer(liab_prct),
+  channel=as.factor(channel),
+  policy_report_filed_ind=as.factor(policy_report_filed_ind),
+  claim_est_payout=as.double(claim_est_payout),
+  age_of_vehicle=as.integer(age_of_vehicle),
+  vehicle_category=as.factor(vehicle_category), 
+  vehicle_price=as.double(vehicle_price),
+  vehicle_color=as.factor(vehicle_color),
+  vehicle_weight=as.double(vehicle_weight)
+)
+
+pred_labels_test <- predict(tuned_rf_raw, newdata = test, type = "raw")
+test$fraud <- NA
+test$fraud[!is.na(pred_labels_test)] <- pred_labels_test
+test$fraud <- ifelse(test$fraud == "1", "0", "1")
+test$fraud[is.na(test$fraud)] <- "0"
+
+final_tibble  <- test[, c("claim_number", "fraud")]
+write.csv(final_tibble, "final_syf.csv", row.names=F)
+```
+
+```{r rf2}
+## Random Forest
+library(randomForest)
+library(caret)
+library(caTools)
+library(performanceEstimation)
+library(e1071)
+
+summary(train)   # reassure all types are valid
+
+set.seed(415)
+train <- train %>% select(-claim_date, -zip_code)
+if (!is.factor(train$fraud)) {
+  train$fraud <- as.factor(train$fraud)
+  train$fraud <- factor(train$fraud, levels = c(0, 1))
+}
+
+# split train and validation sets
+spl <- sample.split(train$fraud, SplitRatio = 0.75)
+train_set <- train %>% subset(spl == T)
+validation_set <- train %>% subset(spl == F)
+
+# SMOTE
+train_set_balanced <- smote(fraud ~ ., train_set)
+
+dim(train_set_balanced)
+dim(validation_set)
+
+train_set_balanced$fraud <- as.factor(train_set_balanced$fraud)
+validation_set$fraud <- as.factor(validation_set$fraud)
+
+# rfs
+#control_fs <- rfeControl(functions=rfFuncs, method="cv", number=10)
+#result_rfe <- rfe(train_set_balanced[,-ncol(train_set_balanced)], as.vector(train_set_balanced$fraud), sizes=c(1:ncol(train_set_balanced)-1), rfeControl=control_fs)
+#train_set_balanced <- train_set_balanced[, predictors(result_rfe)]
+
+## rf_raw
+rf_raw <- randomForest(fraud ~ age_of_driver+gender+marital_status+annual_income+safty_rating+high_education_ind+address_change_ind+living_status+past_num_of_claims+witness_present_ind+liab_prct+policy_report_filed_ind+claim_est_payout+age_of_vehicle, data = train_set_balanced)
+rf_raw_pred <- rf_raw %>% predict(newdata = validation_set)
+table(validation_set$fraud, rf_raw_pred)
+confusionMatrix(rf_raw_pred, validation_set$fraud)
+
+accuracy_raw <- sum(rf_raw_pred == validation_set$fraud) / length(rf_raw_pred)
+cat("Accuracy of rf_raw:", accuracy_raw)
+
+
+## cross validation
+control <- trainControl(method = "cv", number = 3) # 3 fold
+grid <- expand.grid(.mtry = seq(2, 10, 2), .ntree=c(500, 1000), .maxnodes=c(10, 20))
+tuned_rf_raw <- train(fraud ~ age_of_driver+gender+marital_status+annual_income+safty_rating+high_education_ind+address_change_ind+living_status+past_num_of_claims+witness_present_ind+liab_prct+policy_report_filed_ind+claim_est_payout+age_of_vehicle, 
+                      data = train_set_balanced, 
+                      method = "rf", trControl = control, 
+                      tuneGrid = grid)
+rf_raw_tuned_pred <- tuned_rf_raw %>% predict(newdata = validation_set, type = "prob")
+rf_raw_tuned_pred <- ifelse(rf_raw_tuned_pred[,2] > 0.6, 1, 0) # change the cutoff point
+cm <- confusionMatrix(as.factor(rf_raw_tuned_pred), as.factor(validation_set$fraud))
+precision <- cm$table[2,2] / sum(cm$table[,2])
+recall <- cm$table[2,2] / sum(cm$table[2,])
+f1 <- 2 * ((precision * recall) / (precision + recall))
+
+test <- read_csv("data copy/test_2023.csv")
+
+test <- test %>% transform(
+  age_of_driver=as.integer(age_of_driver),
+  gender=as.factor(gender),
+  marital_status=as.factor(marital_status),
+  safty_rating=as.integer(safty_rating),
+  annual_income=as.integer(annual_income),
+  high_education_ind=as.factor(high_education_ind),
+  address_change_ind=as.factor(address_change_ind),
+  living_status=as.factor(living_status),
+  zip_code=as.factor(zip_code),
+  claim_date=as.factor(claim_date),
+  claim_day_of_week=as.factor(claim_day_of_week),
+  accident_site=as.factor(accident_site),
+  past_num_of_claims=as.factor(past_num_of_claims),
+  witness_present_ind=as.factor(witness_present_ind),
+  liab_prct=as.integer(liab_prct),
+  channel=as.factor(channel),
+  policy_report_filed_ind=as.factor(policy_report_filed_ind),
+  claim_est_payout=as.double(claim_est_payout),
+  age_of_vehicle=as.integer(age_of_vehicle),
+  vehicle_category=as.factor(vehicle_category), 
+  vehicle_price=as.double(vehicle_price),
+  vehicle_color=as.factor(vehicle_color),
+  vehicle_weight=as.double(vehicle_weight)
+)
+
+pred_labels_test <- predict(tuned_rf_raw, newdata = test, type = "raw")
+test$fraud <- NA
+test$fraud[!is.na(pred_labels_test)] <- pred_labels_test
+test$fraud <- ifelse(test$fraud == "1", "0", "1")
+test$fraud[is.na(test$fraud)] <- "0"
+
+final_tibble  <- test[, c("claim_number", "fraud")]
+write.csv(final_tibble, "final_syf_2.csv", row.names=F)
+```
+
+```{r xg-boost}
+library(xgboost)
+
+train_set_balanced$fraud <- ifelse(train_set_balanced$fraud == "Fraud", 1, 0)
+train_set_labels <- train_set_balanced$fraud
+train_set_balanced <- train_set_balanced %>% select(-fraud)
+
+validation_set$fraud <- ifelse(validation_set$fraud == "Fraud", 1, 0)
+validation_set_labels <- validation_set$fraud
+validation_set <- validation_set %>% select(-fraud)
+
+train_set_balanced <- train_set_balanced %>%
+  mutate_if(is.character, as.factor) %>% 
+  mutate_if(is.factor, as.numeric)
+
+validation_set <- validation_set %>%
+  mutate_if(is.character, as.factor) %>% 
+  mutate_if(is.factor, as.numeric)
+
+dtrain_set <- xgb.DMatrix(data = as.matrix(train_set_balanced), label = train_set_labels)
+dvalidation_set <- xgb.DMatrix(data = as.matrix(validation_set), label = validation_set_labels)
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "error",
+  max_depth = 6,
+  eta = 0.3
+)
+
+xgb <- xgb.train(params = params, data = dtrain_set, nrounds = 100)
+xgb_pred <- predict(xgb, dvalidation_set)
+xgb_pred_labels <- ifelse(xgb_pred > 0.5, 1, 0)
+
+f1_xgb <- F1_Score(xgb_pred_labels, validation_set_labels)
+cat("F1 Score:", f1_xgb)
+
+importance_matrix <- xgb.importance(feature_names = colnames(train_set_balanced), model = xgb)
+
+xgb.plot.importance(importance_matrix)
+```
+
+```{r final logistic}
+# transformation
+train$claim_day_of_week <- ifelse(train$claim_day_of_week == "Saturday" | train$claim_day_of_week == "Sunday", 0, 1)
+train <- train %>% mutate(log_annual_income = log(annual_income))
+
+train_test <- train %>% select(fraud, log_annual_income, safty_rating, marital_status, high_education_ind, address_change_ind, past_num_of_claims, witness_present_ind, claim_est_payout, age_of_vehicle, living_status, claim_day_of_week)
+
+# logistic regression
+train_reg <- glm(fraud ~ log_annual_income + safty_rating + marital_status + high_education_ind + address_change_ind + past_num_of_claims + witness_present_ind + claim_est_payout + age_of_vehicle + living_status + claim_day_of_week, train_test, family = "binomial")
+
+summary(train_reg)
+
+# cross validation
+ctrl <- trainControl(method = "cv", number = 10)
+model <-  train(train_reg, ctrl)
+model <- train(train_test[, -2], train_test[, 2], method = "glm", trControl = ctrl, family = "binomial")
+
+print(model)
+
+
+# Logistic Regression
+train_reg <- glm(train_test[, ncol(train_test) - 1] ~ ., data = train_test[, -ncol(train_test)], family = "binomial")
+  
+summary(train_reg)
+
+# Cross-validation
+ctrl <- trainControl(method = "cv", number = 10)
+model <- train(train_test[, -ncol(train_test)], train_test[, ncol(train_test) - 1], method = "glm", trControl = ctrl, family = "binomial")
+
+print(model)
+
+
+```
